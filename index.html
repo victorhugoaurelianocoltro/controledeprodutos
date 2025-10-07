@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RepairPro - Sistema Profissional de Gestão de Consertos</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <i class="fas fa-tools"></i>
+                <span class="logo-text">RepairPro</span>
+            </div>
+            <button class="sidebar-toggle" id="sidebarToggle">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+        
+        <div class="sidebar-menu">
+            <ul class="menu-list">
+                <li class="menu-item active" data-page="dashboard">
+                    <a href="#" class="menu-link">
+                        <i class="fas fa-chart-line"></i>
+                        <span class="menu-text">Dashboard</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-page="produtos">
+                    <a href="#" class="menu-link">
+                        <i class="fas fa-box-open"></i>
+                        <span class="menu-text">Produtos</span>
+                        <span class="menu-badge" id="produtosBadge">0</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-page="cadastro">
+                    <a href="#" class="menu-link">
+                        <i class="fas fa-plus-circle"></i>
+                        <span class="menu-text">Novo Produto</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-page="relatorios">
+                    <a href="#" class="menu-link">
+                        <i class="fas fa-chart-bar"></i>
+                        <span class="menu-text">Relatórios</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-page="configuracoes">
+                    <a href="#" class="menu-link">
+                        <i class="fas fa-cog"></i>
+                        <span class="menu-text">Configurações</span>
+                    </a>
+                </li>
+            </ul>
+        </div>
+        
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <div class="user-avatar">
+                    <i class="fas fa-user"></i>
+                </div>
+                <div class="user-details">
+                    <span class="user-name">Administrador</span>
+                    <span class="user-role">Gerente</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Top Header -->
+        <header class="top-header">
+            <div class="header-left">
+                <button class="mobile-menu-toggle" id="mobileMenuToggle">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <div class="breadcrumb">
+                    <span class="breadcrumb-item active" id="currentPage">Dashboard</span>
+                </div>
+            </div>
+            
+            <div class="header-right">
+                <div class="header-actions">
+                    <button class="header-btn" id="btnNotifications" title="Notificações">
+                        <i class="fas fa-bell"></i>
+                        <span class="notification-badge" id="notificationCount" style="display: none;">0</span>
+                    </button>
+                    <button class="header-btn" id="btnTheme" title="Alternar Tema">
+                        <i class="fas fa-moon"></i>
+                    </button>
+                    <button class="header-btn" id="btnFullscreen" title="Tela Cheia">
+                        <i class="fas fa-expand"></i>
+                    </button>
+                </div>
+                
+                <div class="current-time">
+                    <i class="fas fa-clock"></i>
+                    <span id="currentTime"></span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Page Content Container -->
+        <div class="page-container" id="pageContainer">
+            <!-- Content will be dynamically loaded here -->
+        </div>
+    </main>
+
+    <!-- Notification Panel -->
+    <div class="notification-panel" id="notificationPanel">
+        <div class="notification-header">
+            <h3>Notificações</h3>
+            <button class="close-notifications" id="closeNotifications">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="notification-list" id="notificationList">
+            <!-- Notifications will be loaded here -->
+        </div>
+    </div>
+
+    <!-- Overlay -->
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Modal de Produto Detalhado -->
+    <div id="modalProdutoDetalhado" class="modal-overlay">
+        <div class="modal-container">
+            <div class="modal-header-detailed">
+                <h2 id="modalTitulo">Detalhes do Produto</h2>
+                <button class="modal-close" id="closeModalDetalhado">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body-detailed" id="modalBodyDetalhado">
+                <!-- Content will be loaded dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Input oculto para importar arquivos -->
+    <input type="file" id="inputImportar" accept=".json" style="display: none;">
+
+    <script src="script.js"></script>
+</body>
+</html>
