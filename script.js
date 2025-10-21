@@ -1,20 +1,380 @@
 // RepairPro - Sistema Profissional de Gestão de Consertos
 class RepairProSystem {
     constructor() {
-        this.produtos = this.carregarProdutos();
+        // Configuração da API
+        this.API_URL = 'http://localhost:3000/api/produtos';
+        this.apiConnected = false;
+        
+        this.produtos = [];
         this.currentPage = 'dashboard';
         this.sidebarCollapsed = false;
+        
+        // Filtros ativos (usado para navegação do dashboard)
+        this.filtrosAtivos = {
+            prioridade: 'todas',
+            dias: 'todos',
+            status: 'todos'
+        };
+        
         this.inicializar();
     }
 
-    inicializar() {
+    async inicializar() {
         this.configurarEventos();
         this.configurarNavegacao();
         this.carregarPreferencias();
         this.atualizarRelogio();
-        this.carregarPagina('dashboard');
         this.iniciarAtualizacaoAutomatica();
         this.iniciarMonitoramentoAPI();
+        // Carrega produtos da API e depois carrega a página
+        await this.carregarProdutos();
+        const params = new URLSearchParams(window.location.search);
+        const filtro = params.get('filtro');
+        const isProdutosPage = window.location.pathname.endsWith('produtos.html');
+
+        if (isProdutosPage) {
+            // Em produtos.html, abrir a página de produtos aplicando filtro pela API quando possível
+            if (filtro) {
+                const statusAPI = this.mapearFiltroURLParaStatusAPI(filtro);
+                if (statusAPI) {
+                    await this.carregarProdutos({ status: statusAPI });
+                    this.navegarPara('produtos', this.mapearFiltroURL(filtro));
+                    return;
+                }
+            }
+            // Sem filtro ou não mapeado, carrega normal e abre produtos
+            await this.carregarProdutos();
+            this.navegarPara('produtos', this.mapearFiltroURL(filtro || 'todos'));
+            return;
+        }
+
+        // No index.html, se houver filtro, abrir produtos filtrado; senão, dashboard
+        if (filtro) {
+            const statusAPI = this.mapearFiltroURLParaStatusAPI(filtro);
+            await this.carregarProdutos(statusAPI ? { status: statusAPI } : null);
+            const m = this.mapearFiltroURL(filtro);
+            this.navegarPara('produtos', m);
+        } else {
+            this.carregarPagina('dashboard');
+        }
+    }
+
+    /**
+     * Conecta os cards do dashboard com navegação baseada em URL (?filtro=)
+     */
+    configurarClicksDashboard() {
+        const elReparo = document.getElementById('card-em-reparo');
+        const elUrgentes = document.getElementById('card-urgentes');
+        const elConcluidos = document.getElementById('card-concluidos');
+        if (elReparo) elReparo.addEventListener('click', () => {
+            window.location.href = `categoria.html?filtro=reparo`;
+        });
+        if (elUrgentes) elUrgentes.addEventListener('click', () => {
+            window.location.href = `categoria.html?filtro=urgente`;
+        });
+        if (elConcluidos) elConcluidos.addEventListener('click', () => {
+            window.location.href = `categoria.html?filtro=concluido-hoje`;
+        });
+    }
+
+    /**
+     * Mapeia o valor de ?filtro= da URL para filtrosAtivos
+     */
+    mapearFiltroURL(filtro) {
+        // Define apenas como a UI deve se apresentar; a API já retorna filtrado
+        switch ((filtro || '').toLowerCase()) {
+            case 'em_reparo':
+            case 'reparo':
+                // Reparo inclui múltiplos status na API (Em andamento, Aguardando peça)
+                // Para não esconder pelo frontend, não impomos status aqui
+                return { prioridade: 'todas', dias: 'todos', status: 'todos' };
+            case 'concluido':
+                return { prioridade: 'todas', dias: 'todos', status: 'concluido' };
+            case 'concluido-hoje':
+                // Mostra concluídos; a restrição "hoje" já vem da API
+                return { prioridade: 'todas', dias: 'hoje', status: 'concluido' };
+            case 'urgentes':
+            case 'urgente':
+                // Urgente é por prioridade Alta; não filtrar adicionalmente no frontend
+                return { prioridade: 'todas', dias: 'todos', status: 'todos' };
+            case 'pendente':
+                return { prioridade: 'todas', dias: 'todos', status: 'aguardando_orcamento' };
+            case 'todos':
+            default:
+                return { prioridade: 'todas', dias: 'todos', status: 'todos' };
+        }
+    }
+
+    /**
+     * Mapeia ?filtro= para o valor esperado pelo backend em status
+     */
+    mapearFiltroURLParaStatusAPI(filtro) {
+        const f = (filtro || '').toLowerCase();
+        if (f === 'reparo' || f === 'em_reparo') return 'reparo';
+        if (f === 'concluido') return 'concluido';
+        if (f === 'concluido-hoje') return 'concluido-hoje';
+        if (f === 'urgente' || f === 'urgentes') return 'urgente';
+        if (f === 'pendente') return 'pendente';
+        return null;
+    }
+
+    /**
+     * Carrega produtos da API aplicando filtro direto na API
+     */
+    async carregarProdutosAPIComFiltro(filtroStatus) {
+        console.log('[API] Carregando com filtro de status na API:', filtroStatus);
+        const produtosAPI = await this.listarProdutosAPI({ status: filtroStatus });
+        this.produtos = produtosAPI.map(p => this.mapearDaAPI(p));
+        this.salvarProdutosLocal();
+        // Não aplicar filtros adicionais no frontend por padrão
+        this.filtrosAtivos = { prioridade: 'todas', dias: 'todos', status: 'todos' };
+        this.navegarPara('produtos', this.filtrosAtivos);
+        this.atualizarListaProdutos();
+    }
+
+    // =====================================================
+    // MÉTODOS DE SERVIÇO DA API
+    // =====================================================
+
+    /**
+     * Atualiza o indicador visual de status da API
+     */
+    atualizarIndicadorAPI() {
+        const indicador = document.getElementById('apiStatus');
+        if (!indicador) return;
+        
+        const dot = indicador.querySelector('.api-status-dot');
+        const text = indicador.querySelector('.api-status-text');
+        
+        if (this.apiConnected) {
+            indicador.className = 'api-status connected';
+            text.textContent = 'API Conectada';
+        } else {
+            indicador.className = 'api-status disconnected';
+            text.textContent = 'API Offline';
+        }
+    }
+
+    /**
+     * Listar todos os produtos da API
+     */
+    async listarProdutosAPI(params = {}) {
+        try {
+            let url = this.API_URL;
+            const query = new URLSearchParams();
+            // Suporte a filtros via querystring, exemplo: ?status=urgente
+            if (params.status) query.set('status', params.status);
+            if (params.prioridade) query.set('prioridade', params.prioridade);
+            if (params.dias) query.set('dias', params.dias);
+            const qs = query.toString();
+            if (qs) url += `?${qs}`;
+
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data.sucesso) {
+                this.apiConnected = true;
+                this.atualizarIndicadorAPI();
+                return data.dados;
+            } else {
+                throw new Error(data.erro || 'Erro ao listar produtos');
+            }
+        } catch (error) {
+            console.error('Erro ao conectar com a API:', error);
+            this.apiConnected = false;
+            this.atualizarIndicadorAPI();
+            this.mostrarNotificacao('Erro ao conectar com o servidor. Usando dados locais.', 'warning');
+            return this.carregarProdutosLocal();
+        }
+    }
+
+    /**
+     * Criar novo produto na API
+     */
+    async criarProdutoAPI(produto) {
+        try {
+            const response = await fetch(this.API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(produto)
+            });
+            
+            const data = await response.json();
+            
+            if (data.sucesso) {
+                this.apiConnected = true;
+                return data.dados;
+            } else {
+                throw new Error(data.erro || 'Erro ao criar produto');
+            }
+        } catch (error) {
+            console.error('Erro ao criar produto na API:', error);
+            this.apiConnected = false;
+            throw error;
+        }
+    }
+
+    /**
+     * Atualizar produto na API
+     */
+    async atualizarProdutoAPI(id, dados) {
+        try {
+            const response = await fetch(`${this.API_URL}/${id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(dados)
+            });
+            
+            const data = await response.json();
+            
+            if (data.sucesso) {
+                this.apiConnected = true;
+                return data.dados;
+            } else {
+                throw new Error(data.erro || 'Erro ao atualizar produto');
+            }
+        } catch (error) {
+            console.error('Erro ao atualizar produto na API:', error);
+            this.apiConnected = false;
+            throw error;
+        }
+    }
+
+    /**
+     * Deletar produto na API
+     */
+    async deletarProdutoAPI(id) {
+        try {
+            const response = await fetch(`${this.API_URL}/${id}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            
+            if (data.sucesso) {
+                this.apiConnected = true;
+                return true;
+            } else {
+                throw new Error(data.erro || 'Erro ao deletar produto');
+            }
+        } catch (error) {
+            console.error('Erro ao deletar produto na API:', error);
+            this.apiConnected = false;
+            throw error;
+        }
+    }
+
+    /**
+     * Mapeia dados do frontend para o formato da API
+     */
+    mapearParaAPI(produtoFrontend) {
+        return {
+            cliente: produtoFrontend.nomeCliente,
+            telefone: produtoFrontend.telefone,
+            produto: produtoFrontend.produto,
+            defeito: produtoFrontend.problema,
+            valor: produtoFrontend.valor || 0,
+            entrada: produtoFrontend.dataEntrada,
+            entrega: produtoFrontend.dataEntrega || '',
+            status: this.mapearStatusParaAPI(produtoFrontend.status),
+            prioridade: this.mapearPrioridadeParaAPI(produtoFrontend.prioridade),
+            observacoes: produtoFrontend.observacoes || ''
+        };
+    }
+
+    /**
+     * Mapeia dados da API para o formato do frontend
+     */
+    mapearDaAPI(produtoAPI) {
+        return {
+            id: produtoAPI.id,
+            nomeCliente: produtoAPI.cliente,
+            telefone: produtoAPI.telefone,
+            produto: produtoAPI.produto,
+            problema: produtoAPI.defeito,
+            valor: produtoAPI.valor,
+            dataEntrada: produtoAPI.entrada,
+            dataEntrega: produtoAPI.entrega,
+            status: this.mapearStatusDaAPI(produtoAPI.status),
+            prioridade: this.mapearPrioridadeDaAPI(produtoAPI.prioridade),
+            observacoes: produtoAPI.observacoes,
+            dataCadastro: produtoAPI.criado_em
+        };
+    }
+
+    /**
+     * Mapeia status do frontend para API
+     */
+    mapearStatusParaAPI(statusFrontend) {
+        const mapa = {
+            'aguardando_orcamento': 'Aguardando Orçamento',
+            'orcamento_enviado': 'Orçamento Enviado',
+            'aguardando_aprovacao': 'Aguardando Aprovação',
+            'em_reparo': 'Em Reparo',
+            'aguardando_peca': 'Aguardando Peça',
+            'teste_qualidade': 'Teste de Qualidade',
+            'pronto_retirada': 'Pronto para Retirada',
+            'concluido': 'Concluído',
+            'cancelado': 'Cancelado'
+        };
+        return mapa[statusFrontend] || 'Em Reparo';
+    }
+
+    /**
+     * Mapeia status da API para frontend
+     */
+    mapearStatusDaAPI(statusAPI) {
+        if (!statusAPI) return 'em_reparo';
+        // Normaliza acentos e caixa para comparação robusta
+        const s = String(statusAPI)
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase().trim();
+
+        const mapa = {
+            'aguardando orcamento': 'aguardando_orcamento',
+            'orcamento enviado': 'orcamento_enviado',
+            'aguardando aprovacao': 'aguardando_aprovacao',
+            'em reparo': 'em_reparo',
+            'aguardando peca': 'aguardando_peca',
+            'teste de qualidade': 'teste_qualidade',
+            'pronto para retirada': 'pronto_retirada',
+            'concluido': 'concluido',
+            'cancelado': 'cancelado',
+            // Fallbacks comuns
+            'em andamento': 'em_reparo',
+            'pendente': 'aguardando_orcamento'
+        };
+        return mapa[s] || 'em_reparo';
+    }
+
+    /**
+     * Mapeia prioridade do frontend para API
+     */
+    mapearPrioridadeParaAPI(prioridadeFrontend) {
+        const mapa = {
+            'urgente': 'Urgente',
+            'alta': 'Alta',
+            'normal': 'Normal',
+            'baixa': 'Baixa'
+        };
+        return mapa[prioridadeFrontend] || 'Normal';
+    }
+
+    /**
+     * Mapeia prioridade da API para frontend
+     */
+    mapearPrioridadeDaAPI(prioridadeAPI) {
+        const mapa = {
+            'Urgente': 'urgente',
+            'Alta': 'alta',
+            'Normal': 'normal',
+            'Baixa': 'baixa'
+        };
+        return mapa[prioridadeAPI] || 'normal';
     }
 
     configurarEventos() {
@@ -70,19 +430,52 @@ class RepairProSystem {
         });
     }
 
-    navegarPara(page) {
+    navegarPara(page, filtros = null) {
         // Update active menu item
         document.querySelectorAll('.menu-item').forEach(item => {
             item.classList.remove('active');
         });
-        document.querySelector(`[data-page="${page}"]`).classList.add('active');
+        
+        const menuItem = document.querySelector(`[data-page="${page}"]`);
+        if (menuItem) {
+            menuItem.classList.add('active');
+        }
         
         // Update breadcrumb
         document.getElementById('currentPage').textContent = this.getPageTitle(page);
         
+        // Se filtros foram passados, armazena para aplicar
+        if (filtros) {
+            this.filtrosAtivos = { ...this.filtrosAtivos, ...filtros };
+        } else {
+            // Reseta filtros se não foram passados
+            this.filtrosAtivos = {
+                prioridade: 'todas',
+                dias: 'todos',
+                status: 'todos'
+            };
+        }
+        
         // Load page content
         this.carregarPagina(page);
         this.currentPage = page;
+    }
+
+    /**
+     * Navega para produtos aplicando um filtro específico
+     */
+    navegarParaProdutosComFiltro(filtroTipo, filtroValor) {
+        const filtros = {
+            prioridade: 'todas',
+            dias: 'todos',
+            status: 'todos'
+        };
+        
+        // Aplica o filtro específico
+        filtros[filtroTipo] = filtroValor;
+        
+        // Navega para produtos com o filtro
+        this.navegarPara('produtos', filtros);
     }
 
     getPageTitle(page) {
@@ -103,10 +496,13 @@ class RepairProSystem {
             case 'dashboard':
                 container.innerHTML = this.renderDashboard();
                 this.atualizarEstatisticas();
+                this.configurarClicksDashboard();
                 break;
             case 'produtos':
                 container.innerHTML = this.renderProdutos();
                 this.configurarEventosProdutos();
+                // Aplica os filtros ativos nos selects da interface
+                this.aplicarFiltrosAtivosNaInterface();
                 this.atualizarListaProdutos();
                 break;
             case 'cadastro':
@@ -127,7 +523,7 @@ class RepairProSystem {
     renderDashboard() {
         return `
             <div class="dashboard-grid">
-                <div class="stat-card">
+                <div class="stat-card stat-card-clickable" id="card-em-reparo" title="Clique para ver todos os produtos em reparo">
                     <div class="stat-header">
                         <span class="stat-title">Produtos em Reparo</span>
                         <div class="stat-icon">
@@ -136,12 +532,12 @@ class RepairProSystem {
                     </div>
                     <div class="stat-value" id="totalProdutos">0</div>
                     <div class="stat-change neutral">
-                        <i class="fas fa-minus"></i>
-                        <span>Sem alteração</span>
+                        <i class="fas fa-mouse-pointer"></i>
+                        <span>Clique para ver</span>
                     </div>
                 </div>
                 
-                <div class="stat-card">
+                <div class="stat-card stat-card-clickable" id="card-urgentes" title="Clique para ver produtos urgentes">
                     <div class="stat-header">
                         <span class="stat-title">Produtos Urgentes</span>
                         <div class="stat-icon" style="background: var(--error-100); color: var(--error-500);">
@@ -150,12 +546,12 @@ class RepairProSystem {
                     </div>
                     <div class="stat-value" id="produtosUrgentes">0</div>
                     <div class="stat-change negative">
-                        <i class="fas fa-arrow-up"></i>
-                        <span>Mais de 7 dias</span>
+                        <i class="fas fa-mouse-pointer"></i>
+                        <span>Mais de 7 dias - Clique para ver</span>
                     </div>
                 </div>
                 
-                <div class="stat-card">
+                <div class="stat-card stat-card-clickable" id="card-concluidos" title="Clique para ver produtos concluídos">
                     <div class="stat-header">
                         <span class="stat-title">Concluídos Hoje</span>
                         <div class="stat-icon" style="background: var(--success-100); color: var(--success-500);">
@@ -164,8 +560,8 @@ class RepairProSystem {
                     </div>
                     <div class="stat-value" id="produtosConcluidos">0</div>
                     <div class="stat-change positive">
-                        <i class="fas fa-arrow-up"></i>
-                        <span>+12% hoje</span>
+                        <i class="fas fa-mouse-pointer"></i>
+                        <span>Clique para ver</span>
                     </div>
                 </div>
             </div>
@@ -192,6 +588,18 @@ class RepairProSystem {
                 </div>
             </div>
             
+            <div class="quick-filters">
+                <button class="chip-filter" id="chipTodos"><i class="fas fa-list"></i> Todos</button>
+                <button class="chip-filter" id="chipEmReparo"><i class="fas fa-tools"></i> Em Reparo</button>
+                <button class="chip-filter" id="chipUrgentes"><i class="fas fa-exclamation-triangle"></i> Urgentes</button>
+                <button class="chip-filter" id="chipConcluidos"><i class="fas fa-check-circle"></i> Concluídos</button>
+            </div>
+            
+            <div class="filter-active-info" id="filtroAtivoInfo" style="margin: 0 0 0.5rem 0; display:flex; align-items:center; gap:.5rem; color: var(--text-secondary);">
+                <i class="fas fa-filter"></i>
+                <span>Filtro: carregando...</span>
+            </div>
+
             <div class="products-filters">
                 <div class="filters-row">
                     <div class="filter-group">
@@ -497,6 +905,10 @@ class RepairProSystem {
         const filtroPrioridade = document.getElementById('filtroPrioridade');
         const filtroDias = document.getElementById('filtroDias');
         const campoBusca = document.getElementById('campoBusca');
+        const chipTodos = document.getElementById('chipTodos');
+        const chipEmReparo = document.getElementById('chipEmReparo');
+        const chipUrgentes = document.getElementById('chipUrgentes');
+        const chipConcluidos = document.getElementById('chipConcluidos');
 
         if (filtroOrdem) {
             filtroOrdem.addEventListener('change', () => {
@@ -518,6 +930,47 @@ class RepairProSystem {
 
         if (campoBusca) {
             campoBusca.addEventListener('input', () => {
+                this.atualizarListaProdutos();
+            });
+        }
+
+        // Filtros rápidos
+        const ativarChip = (chipAtivo) => {
+            [chipTodos, chipEmReparo, chipUrgentes, chipConcluidos].forEach(chip => {
+                if (!chip) return;
+                chip.classList.toggle('active', chip === chipAtivo);
+            });
+        };
+        
+        if (chipTodos) {
+            chipTodos.addEventListener('click', () => {
+                this.filtrosAtivos = { prioridade: 'todas', dias: 'todos', status: 'todos' };
+                this.aplicarFiltrosAtivosNaInterface();
+                ativarChip(chipTodos);
+                this.atualizarListaProdutos();
+            });
+        }
+        if (chipEmReparo) {
+            chipEmReparo.addEventListener('click', () => {
+                this.filtrosAtivos = { prioridade: 'todas', dias: 'todos', status: 'em_reparo' };
+                this.aplicarFiltrosAtivosNaInterface();
+                ativarChip(chipEmReparo);
+                this.atualizarListaProdutos();
+            });
+        }
+        if (chipUrgentes) {
+            chipUrgentes.addEventListener('click', () => {
+                this.filtrosAtivos = { prioridade: 'todas', dias: 'urgentes', status: 'todos' };
+                this.aplicarFiltrosAtivosNaInterface();
+                ativarChip(chipUrgentes);
+                this.atualizarListaProdutos();
+            });
+        }
+        if (chipConcluidos) {
+            chipConcluidos.addEventListener('click', () => {
+                this.filtrosAtivos = { prioridade: 'todas', dias: 'todos', status: 'concluido' };
+                this.aplicarFiltrosAtivosNaInterface();
+                ativarChip(chipConcluidos);
                 this.atualizarListaProdutos();
             });
         }
@@ -549,7 +1002,6 @@ class RepairProSystem {
         }
 
         const dadosProduto = {
-            id: this.gerarId(),
             nomeCliente: nomeCliente.value.trim(),
             telefone: telefone.value.trim(),
             produto: produto.value.trim(),
@@ -557,7 +1009,9 @@ class RepairProSystem {
             dataEntrada: dataEntrada.value,
             prioridade: prioridade.value,
             status: 'em_reparo',
-            dataCadastro: new Date().toISOString()
+            valor: 0,
+            dataEntrega: '',
+            observacoes: ''
         };
 
         // Validação básica
@@ -565,27 +1019,49 @@ class RepairProSystem {
             return;
         }
 
-        // Adiciona o produto à lista
-        this.produtos.push(dadosProduto);
-        console.log('Produto adicionado:', dadosProduto);
-        console.log('Total de produtos:', this.produtos.length);
-        
-        // Salva no localStorage
-        this.salvarProdutos();
-        
-        // Atualiza a interface
-        this.atualizarInterface();
-        
-        // Limpa o formulário
-        this.limparFormulario();
-        
-        // Mostra mensagem de sucesso e navega para a lista
-        this.mostrarNotificacao('Produto cadastrado com sucesso!', 'success');
-        
-        // Navega para a página de produtos após o cadastro
-        setTimeout(() => {
-            this.navegarPara('produtos');
-        }, 1500);
+        // Cadastrar produto via API
+        this.cadastrarProdutoAPI(dadosProduto);
+    }
+
+    async cadastrarProdutoAPI(dadosProduto) {
+        try {
+            // Mostra loading
+            this.mostrarNotificacao('Cadastrando produto...', 'info');
+            
+            // Mapeia para o formato da API
+            const produtoAPI = this.mapearParaAPI(dadosProduto);
+            
+            // Envia para a API
+            const novoProduto = await this.criarProdutoAPI(produtoAPI);
+            
+            // Adiciona o produto mapeado à lista local
+            const produtoMapeado = this.mapearDaAPI(novoProduto);
+            this.produtos.push(produtoMapeado);
+            
+            console.log('Produto cadastrado na API:', novoProduto);
+            console.log('Total de produtos:', this.produtos.length);
+            
+            // Salva backup local
+            this.salvarProdutosLocal();
+            
+            // Atualiza a interface
+            this.atualizarInterface();
+            
+            // Limpa o formulário
+            this.limparFormulario();
+            
+            // Mostra mensagem de sucesso e navega para a lista
+            this.mostrarNotificacao('Produto cadastrado com sucesso!', 'success');
+            
+            // Navega para a página de produtos após o cadastro
+            setTimeout(() => {
+                this.navegarPara('produtos');
+            }, 1500);
+            
+        } catch (error) {
+            console.error('Erro ao cadastrar produto:', error);
+            this.mostrarNotificacao('Erro ao cadastrar produto. Tente novamente.', 'error');
+        }
     }
 
     validarProduto(produto) {
@@ -665,14 +1141,20 @@ class RepairProSystem {
     }
 
     atualizarListaProdutos() {
+        console.log('[Produtos] Atualizando lista com filtrosAtivos:', this.filtrosAtivos);
         const container = document.getElementById('listaProdutos');
         const filtroOrdem = document.getElementById('filtroOrdem').value;
         const filtroPrioridade = document.getElementById('filtroPrioridade').value;
         const filtroDias = document.getElementById('filtroDias').value;
         const termoBusca = document.getElementById('campoBusca').value.toLowerCase().trim();
         
-        // Filtra apenas produtos em reparo
-        let produtosAtivos = this.produtos.filter(p => p.status === 'em_reparo');
+        // Inicia com todos os produtos retornados (já podem estar filtrados pela API)
+        let produtosAtivos = [...this.produtos];
+        
+        // Se o filtro de status está ativo no frontend, aplica
+        if (this.filtrosAtivos.status !== 'todos') {
+            produtosAtivos = produtosAtivos.filter(p => p.status === this.filtrosAtivos.status);
+        }
         
         // Aplica filtros
         produtosAtivos = this.aplicarFiltros(produtosAtivos, filtroPrioridade, filtroDias, termoBusca);
@@ -681,14 +1163,77 @@ class RepairProSystem {
         produtosAtivos = this.ordenarProdutos(produtosAtivos, filtroOrdem);
         
         // Atualiza informações de resultados
-        this.atualizarInfoResultados(produtosAtivos.length, this.produtos.filter(p => p.status === 'em_reparo').length);
+        const totalSemFiltro = this.filtrosAtivos.status !== 'todos'
+            ? this.produtos.filter(p => p.status === this.filtrosAtivos.status).length
+            : this.produtos.length;
+        this.atualizarInfoResultados(produtosAtivos.length, totalSemFiltro);
         
         if (produtosAtivos.length === 0) {
+            console.log('[Produtos] Nenhum produto após filtros. Total sem filtro base:', totalSemFiltro);
             container.innerHTML = this.getEmptyState();
             return;
         }
 
         container.innerHTML = produtosAtivos.map(produto => this.criarCardProduto(produto)).join('');
+        // Atualiza texto do filtro ativo
+        this.atualizarTextoFiltroAtivo();
+    }
+
+    atualizarTextoFiltroAtivo() {
+        const el = document.getElementById('filtroAtivoInfo');
+        if (!el) return;
+        const partes = [];
+        if (this.filtrosAtivos.status !== 'todos') {
+            partes.push(`Status: ${this.filtrosAtivos.status.replace('_', ' ')}`);
+        }
+        if (this.filtrosAtivos.dias !== 'todos') {
+            const mapDias = { urgentes: 'Mais de 7 dias', semana: 'Esta semana', hoje: 'Hoje' };
+            partes.push(`Período: ${mapDias[this.filtrosAtivos.dias] || this.filtrosAtivos.dias}`);
+        }
+        if (this.filtrosAtivos.prioridade !== 'todas') {
+            partes.push(`Prioridade: ${this.filtrosAtivos.prioridade}`);
+        }
+        el.querySelector('span').textContent = partes.length ? `Filtro: ${partes.join(' • ')}` : 'Filtro: Todos';
+    }
+
+    /**
+     * Aplica os filtros ativos nos selects da interface
+     */
+    aplicarFiltrosAtivosNaInterface() {
+        // Aguarda um momento para garantir que os elementos foram renderizados
+        setTimeout(() => {
+            const filtroPrioridade = document.getElementById('filtroPrioridade');
+            const filtroDias = document.getElementById('filtroDias');
+            const chipTodos = document.getElementById('chipTodos');
+            const chipEmReparo = document.getElementById('chipEmReparo');
+            const chipUrgentes = document.getElementById('chipUrgentes');
+            const chipConcluidos = document.getElementById('chipConcluidos');
+            
+            if (filtroPrioridade && this.filtrosAtivos.prioridade !== 'todas') {
+                filtroPrioridade.value = this.filtrosAtivos.prioridade;
+            }
+            
+            if (filtroDias && this.filtrosAtivos.dias !== 'todos') {
+                filtroDias.value = this.filtrosAtivos.dias;
+            }
+
+            // Ativa o chip apropriado
+            const ativarChip = (chipAtivo) => {
+                [chipTodos, chipEmReparo, chipUrgentes, chipConcluidos].forEach(chip => {
+                    if (!chip) return;
+                    chip.classList.toggle('active', chip === chipAtivo);
+                });
+            };
+            if (this.filtrosAtivos.status === 'concluido') {
+                ativarChip(chipConcluidos);
+            } else if (this.filtrosAtivos.status === 'em_reparo') {
+                ativarChip(chipEmReparo);
+            } else if (this.filtrosAtivos.dias === 'urgentes') {
+                ativarChip(chipUrgentes);
+            } else {
+                ativarChip(chipTodos);
+            }
+        }, 100);
     }
 
     aplicarFiltros(produtos, filtroPrioridade, filtroDias, termoBusca) {
@@ -866,21 +1411,46 @@ class RepairProSystem {
         if (confirm('Tem certeza que deseja marcar este produto como concluído?')) {
             const produto = this.produtos.find(p => p.id === id);
             if (produto) {
-                produto.status = 'concluido';
-                produto.dataConclusao = new Date().toISOString();
-                this.salvarProdutos();
-                this.atualizarInterface();
-                this.mostrarNotificacao('✅ Produto marcado como concluído!', 'success');
+                // Atualiza via API e localmente pelo fluxo já existente
+                this.atualizarStatusAPI(id, 'concluido')
+                    .then(() => {
+                        // Após concluir, oferece atalho para ver concluídos
+                        this.filtrosAtivos = { prioridade: 'todas', dias: 'todos', status: 'concluido' };
+                        this.navegarPara('produtos', this.filtrosAtivos);
+                    })
+                    .catch(() => {});
             }
         }
     }
 
     excluirProduto(id) {
         if (confirm('Tem certeza que deseja excluir este produto? Esta ação não pode ser desfeita.')) {
+            this.excluirProdutoAPI(id);
+        }
+    }
+
+    async excluirProdutoAPI(id) {
+        try {
+            // Mostra loading
+            this.mostrarNotificacao('Excluindo produto...', 'info');
+            
+            // Deleta na API
+            await this.deletarProdutoAPI(id);
+            
+            // Remove da lista local
             this.produtos = this.produtos.filter(p => p.id !== id);
-            this.salvarProdutos();
+            
+            // Salva backup local
+            this.salvarProdutosLocal();
+            
+            // Atualiza interface
             this.atualizarInterface();
+            
             this.mostrarNotificacao('✅ Produto excluído com sucesso!', 'success');
+            
+        } catch (error) {
+            console.error('Erro ao excluir produto:', error);
+            this.mostrarNotificacao('Erro ao excluir produto. Tente novamente.', 'error');
         }
     }
 
@@ -891,6 +1461,7 @@ class RepairProSystem {
         const dias = this.calcularDias(produto.dataEntrada);
         const dataFormatada = this.formatarData(produto.dataEntrada);
         const dataCadastro = new Date(produto.dataCadastro).toLocaleString('pt-BR');
+        const statusInfo = this.getStatusInfo(produto.status || 'em_reparo');
 
         const modalHTML = `
             <div class="modal-overlay active" id="modalDetalhado" onclick="if(event.target === this) sistema.fecharModalDetalhado()">
@@ -911,6 +1482,45 @@ class RepairProSystem {
                     </div>
 
                     <div class="modal-body">
+                        <!-- Status Section -->
+                        <div class="modal-section modal-status-section">
+                            <h3 class="section-title"><i class="${statusInfo.icon}"></i> Status do Produto</h3>
+                            <div class="status-selector-container">
+                                <div class="current-status-display">
+                                    <div class="status-display-header">
+                                        <i class="${statusInfo.icon} status-display-icon"></i>
+                                        <div>
+                                            <span class="status-display-label">Status Atual</span>
+                                            <span class="status-display-value status-${produto.status || 'em_reparo'}">${statusInfo.label}</span>
+                                        </div>
+                                    </div>
+                                    <div class="status-display-progress">
+                                        <div class="progress-bar">
+                                            <div class="progress-fill status-${produto.status || 'em_reparo'}" style="width: ${statusInfo.progress}%"></div>
+                                        </div>
+                                        <span class="progress-text">${statusInfo.progress}%</span>
+                                    </div>
+                                    <p class="status-display-description">${statusInfo.description}</p>
+                                </div>
+                                <div class="status-selector-wrapper">
+                                    <label class="status-selector-label">
+                                        <i class="fas fa-edit"></i> Alterar Status
+                                    </label>
+                                    <select class="status-selector" id="statusSelector-${produto.id}" onchange="sistema.atualizarStatus('${produto.id}', this.value)">
+                                        <option value="aguardando_orcamento" ${produto.status === 'aguardando_orcamento' ? 'selected' : ''}>Aguardando Orçamento</option>
+                                        <option value="orcamento_enviado" ${produto.status === 'orcamento_enviado' ? 'selected' : ''}>Orçamento Enviado</option>
+                                        <option value="aguardando_aprovacao" ${produto.status === 'aguardando_aprovacao' ? 'selected' : ''}>Aguardando Aprovação</option>
+                                        <option value="em_reparo" ${(produto.status === 'em_reparo' || !produto.status) ? 'selected' : ''}>Em Reparo</option>
+                                        <option value="aguardando_peca" ${produto.status === 'aguardando_peca' ? 'selected' : ''}>Aguardando Peça</option>
+                                        <option value="teste_qualidade" ${produto.status === 'teste_qualidade' ? 'selected' : ''}>Teste de Qualidade</option>
+                                        <option value="pronto_retirada" ${produto.status === 'pronto_retirada' ? 'selected' : ''}>Pronto para Retirada</option>
+                                        <option value="concluido" ${produto.status === 'concluido' ? 'selected' : ''}>Concluído</option>
+                                        <option value="cancelado" ${produto.status === 'cancelado' ? 'selected' : ''}>Cancelado</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="modal-section">
                             <h3 class="section-title"><i class="fas fa-user"></i> Informações do Cliente</h3>
                             <div class="info-grid">
@@ -977,742 +1587,120 @@ class RepairProSystem {
             </div>
         `;
 
+        // Remove modal anterior se existir
         const modalExistente = document.getElementById('modalDetalhado');
-        if (modalExistente) modalExistente.remove();
+        if (modalExistente) {
+            modalExistente.remove();
+        }
 
+        // Adiciona o novo modal
         document.body.insertAdjacentHTML('beforeend', modalHTML);
     }
 
+    getStatusInfo(status) {
+        const statusInfo = {
+            'aguardando_orcamento': {
+                icon: 'fas fa-file-invoice',
+                label: 'Aguardando Orçamento',
+                progress: 10,
+                description: 'O orçamento está sendo preparado.'
+            },
+            'orcamento_enviado': {
+                icon: 'fas fa-paper-plane',
+                label: 'Orçamento Enviado',
+                progress: 20,
+                description: 'O orçamento foi enviado para o cliente.'
+            },
+            'aguardando_aprovacao': {
+                icon: 'fas fa-clock',
+                label: 'Aguardando Aprovação',
+                progress: 30,
+                description: 'Aguardando a aprovação do cliente.'
+            },
+            'em_reparo': {
+                icon: 'fas fa-wrench',
+                label: 'Em Reparo',
+                progress: 50,
+                description: 'O produto está em reparo.'
+            },
+            'aguardando_peca': {
+                icon: 'fas fa-box',
+                label: 'Aguardando Peça',
+                progress: 60,
+                description: 'Aguardando a chegada da peça.'
+            },
+            'teste_qualidade': {
+                icon: 'fas fa-check-circle',
+                label: 'Teste de Qualidade',
+                progress: 80,
+                description: 'Realizando o teste de qualidade.'
+            },
+            'pronto_retirada': {
+                icon: 'fas fa-check',
+                label: 'Pronto para Retirada',
+                progress: 90,
+                description: 'O produto está pronto para ser retirado.'
+            },
+            'concluido': {
+                icon: 'fas fa-check-circle',
+                label: 'Concluído',
+                progress: 100,
+                description: 'O produto foi concluído com sucesso.'
+            },
+            'cancelado': {
+                icon: 'fas fa-times-circle',
+                label: 'Cancelado',
+                progress: 0,
+                description: 'O produto foi cancelado.'
+            }
+        };
+
+        return statusInfo[status] || statusInfo['em_reparo'];
+    }
+
     fecharModalDetalhado() {
-        const modal = document.getElementById('modalDetalhado');
-        if (modal) {
-            modal.classList.remove('active');
-            setTimeout(() => modal.remove(), 300);
-        }
+        document.getElementById('modalDetalhado').classList.remove('active');
     }
 
-    mostrarNotificacao(mensagem, tipo = 'info') {
-        // Remove notificações existentes
-        const notificacoesExistentes = document.querySelectorAll('.toast-notification');
-        notificacoesExistentes.forEach(n => n.remove());
-
-        // Cria nova notificação toast premium
-        const toast = document.createElement('div');
-        toast.className = `toast-notification toast-${tipo}`;
-        
-        const iconMap = {
-            'success': 'check-circle',
-            'error': 'exclamation-circle',
-            'warning': 'exclamation-triangle',
-            'info': 'info-circle'
-        };
-
-        const colorMap = {
-            'success': 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-            'error': 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
-            'warning': 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-            'info': 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
-        };
-
-        toast.innerHTML = `
-            <div class="toast-icon">
-                <i class="fas fa-${iconMap[tipo]}"></i>
-            </div>
-            <div class="toast-content">
-                <span class="toast-message">${mensagem}</span>
-            </div>
-            <button class="toast-close" onclick="this.parentElement.remove()">
-                <i class="fas fa-times"></i>
-            </button>
-        `;
-
-        toast.style.background = colorMap[tipo];
-
-        document.body.appendChild(toast);
-
-        // Remove após 4 segundos com animação
-        setTimeout(() => {
-            toast.style.animation = 'slideOutDown 0.4s ease forwards';
-            setTimeout(() => toast.remove(), 400);
-        }, 4000);
-    }
-
-    getIconeNotificacao(tipo) {
-        const icones = {
-            'success': 'check-circle',
-            'error': 'exclamation-triangle',
-            'warning': 'exclamation-circle',
-            'info': 'info-circle'
-        };
-        return icones[tipo] || 'info-circle';
-    }
-
-    getCorNotificacao(tipo) {
-        const cores = {
-            'success': '#27ae60',
-            'error': '#e74c3c',
-            'warning': '#f39c12',
-            'info': '#3498db'
-        };
-        return cores[tipo] || '#3498db';
-    }
-
-    iniciarAtualizacaoAutomatica() {
-        // Atualiza a interface a cada minuto para manter os contadores de dias atualizados
-        setInterval(() => {
-            this.atualizarInterface();
-        }, 60000); // 60 segundos
-    }
-
-    // Métodos de persistência
-    salvarProdutos() {
-        try {
-            localStorage.setItem('sistemaConsertos_produtos', JSON.stringify(this.produtos));
-        } catch (error) {
-            console.error('Erro ao salvar produtos:', error);
-            this.mostrarNotificacao('Erro ao salvar dados', 'error');
-        }
-    }
-
-    carregarProdutos() {
-        try {
-            const dados = localStorage.getItem('sistemaConsertos_produtos');
-            return dados ? JSON.parse(dados) : [];
-        } catch (error) {
-            console.error('Erro ao carregar produtos:', error);
-            return [];
-        }
-    }
-
-    // Novas funcionalidades avançadas
-    
-    limparFiltros() {
-        document.getElementById('filtroPrioridade').value = 'todas';
-        document.getElementById('filtroDias').value = 'todos';
-        document.getElementById('filtroOrdem').value = 'data';
-        document.getElementById('campoBusca').value = '';
-        this.atualizarListaProdutos();
-        this.mostrarNotificacao('Filtros limpos', 'info');
-    }
-
-    atualizarInfoResultados(resultados, total) {
-        const info = document.getElementById('resultadosInfo');
-        if (resultados === total) {
-            info.textContent = `Mostrando todos os ${total} produtos`;
-        } else {
-            info.textContent = `Mostrando ${resultados} de ${total} produtos`;
-        }
-    }
-
-    abrirRelatorios() {
-        this.gerarRelatorios();
-        document.getElementById('modalRelatorios').style.display = 'block';
-    }
-
-    fecharModal() {
-        document.getElementById('modalRelatorios').style.display = 'none';
-    }
-
-    gerarRelatorios() {
-        const produtosAtivos = this.produtos.filter(p => p.status === 'em_reparo');
-        const produtosConcluidos = this.produtos.filter(p => p.status === 'concluido');
-        
-        // Resumo Geral
-        this.gerarResumoGeral(produtosAtivos, produtosConcluidos);
-        
-        // Relatório por Prioridade
-        this.gerarRelatorioPrioridade(produtosAtivos);
-        
-        // Tempo Médio
-        this.gerarRelatorioTempo(produtosConcluidos);
-        
-        // Histórico
-        this.gerarRelatorioHistorico();
-    }
-
-    gerarResumoGeral(ativos, concluidos) {
-        const urgentes = ativos.filter(p => this.calcularDias(p.dataEntrada) > 7);
-        const tempoMedio = this.calcularTempoMedio(concluidos);
-        
-        const html = `
-            <div class="stat-item">
-                <span class="stat-label">Produtos em Reparo:</span>
-                <span class="stat-value">${ativos.length}</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Produtos Concluídos:</span>
-                <span class="stat-value">${concluidos.length}</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Produtos Urgentes:</span>
-                <span class="stat-value">${urgentes.length}</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Tempo Médio de Reparo:</span>
-                <span class="stat-value">${tempoMedio} dias</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Taxa de Conclusão:</span>
-                <span class="stat-value">${this.calcularTaxaConclusao()}%</span>
-            </div>
-        `;
-        
-        document.getElementById('resumoGeral').innerHTML = html;
-    }
-
-    gerarRelatorioPrioridade(produtos) {
-        const prioridades = {
-            'urgente': produtos.filter(p => p.prioridade === 'urgente').length,
-            'alta': produtos.filter(p => p.prioridade === 'alta').length,
-            'normal': produtos.filter(p => p.prioridade === 'normal').length
-        };
-        
-        const total = produtos.length || 1;
-        
-        const html = `
-            <div class="priority-chart">
-                <div class="priority-bar priority-urgente">
-                    <span class="priority-label">Urgente:</span>
-                    <div class="priority-bar-fill" style="width: ${(prioridades.urgente / total) * 100}%"></div>
-                    <span class="priority-count">${prioridades.urgente}</span>
-                </div>
-                <div class="priority-bar priority-alta">
-                    <span class="priority-label">Alta:</span>
-                    <div class="priority-bar-fill" style="width: ${(prioridades.alta / total) * 100}%"></div>
-                    <span class="priority-count">${prioridades.alta}</span>
-                </div>
-                <div class="priority-bar priority-normal">
-                    <span class="priority-label">Normal:</span>
-                    <div class="priority-bar-fill" style="width: ${(prioridades.normal / total) * 100}%"></div>
-                    <span class="priority-count">${prioridades.normal}</span>
-                </div>
-            </div>
-        `;
-        
-        document.getElementById('relatorioPrioridade').innerHTML = html;
-    }
-
-    gerarRelatorioTempo(concluidos) {
-        const tempoMedio = this.calcularTempoMedio(concluidos);
-        const tempoMinimo = this.calcularTempoMinimo(concluidos);
-        const tempoMaximo = this.calcularTempoMaximo(concluidos);
-        
-        const html = `
-            <div class="stat-item">
-                <span class="stat-label">Tempo Médio:</span>
-                <span class="stat-value">${tempoMedio} dias</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Tempo Mínimo:</span>
-                <span class="stat-value">${tempoMinimo} dias</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Tempo Máximo:</span>
-                <span class="stat-value">${tempoMaximo} dias</span>
-            </div>
-            <div class="stat-item">
-                <span class="stat-label">Produtos este Mês:</span>
-                <span class="stat-value">${this.contarProdutosMes()}</span>
-            </div>
-        `;
-        
-        document.getElementById('relatorioTempo').innerHTML = html;
-    }
-
-    gerarRelatorioHistorico() {
-        const recentes = this.produtos
-            .filter(p => p.status === 'concluido')
-            .sort((a, b) => new Date(b.dataConclusao || b.dataCadastro) - new Date(a.dataConclusao || a.dataCadastro))
-            .slice(0, 5);
-        
-        if (recentes.length === 0) {
-            document.getElementById('relatorioHistorico').innerHTML = '<p>Nenhum produto concluído ainda.</p>';
-            return;
-        }
-        
-        const html = recentes.map(produto => {
-            const tempo = this.calcularTempoReparo(produto);
-            return `
-                <div class="historico-item">
-                    <div class="historico-info">
-                        <div class="historico-produto">${produto.produto}</div>
-                        <div class="historico-cliente">${produto.nomeCliente}</div>
-                    </div>
-                    <div class="historico-tempo">${tempo} dias</div>
-                </div>
-            `;
-        }).join('');
-        
-        document.getElementById('relatorioHistorico').innerHTML = html;
-    }
-
-    calcularTempoMedio(produtos) {
-        if (produtos.length === 0) return 0;
-        
-        const tempos = produtos.map(p => this.calcularTempoReparo(p));
-        const soma = tempos.reduce((acc, tempo) => acc + tempo, 0);
-        return Math.round(soma / produtos.length);
-    }
-
-    calcularTempoMinimo(produtos) {
-        if (produtos.length === 0) return 0;
-        
-        const tempos = produtos.map(p => this.calcularTempoReparo(p));
-        return Math.min(...tempos);
-    }
-
-    calcularTempoMaximo(produtos) {
-        if (produtos.length === 0) return 0;
-        
-        const tempos = produtos.map(p => this.calcularTempoReparo(p));
-        return Math.max(...tempos);
-    }
-
-    calcularTempoReparo(produto) {
-        const entrada = new Date(produto.dataEntrada);
-        const conclusao = new Date(produto.dataConclusao || produto.dataCadastro);
-        const diferenca = conclusao - entrada;
-        return Math.max(0, Math.floor(diferenca / (1000 * 60 * 60 * 24)));
-    }
-
-    calcularTaxaConclusao() {
-        if (this.produtos.length === 0) return 0;
-        
-        const concluidos = this.produtos.filter(p => p.status === 'concluido').length;
-        return Math.round((concluidos / this.produtos.length) * 100);
-    }
-
-    contarProdutosMes() {
-        const agora = new Date();
-        const inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1);
-        
-        return this.produtos.filter(p => {
-            const dataCadastro = new Date(p.dataCadastro);
-            return dataCadastro >= inicioMes;
-        }).length;
-    }
-
-    alternarModoEscuro() {
-        document.body.classList.toggle('dark-mode');
-        const isDark = document.body.classList.contains('dark-mode');
-        
-        // Salva a preferência
-        localStorage.setItem('modoEscuro', isDark);
-        
-        // Atualiza o ícone do botão
-        const btn = document.getElementById('btnModoEscuro');
-        const icon = btn.querySelector('i');
-        
-        if (isDark) {
-            icon.className = 'fas fa-sun';
-            btn.innerHTML = '<i class="fas fa-sun"></i> Modo Claro';
-            this.mostrarNotificacao('Modo escuro ativado', 'info');
-        } else {
-            icon.className = 'fas fa-moon';
-            btn.innerHTML = '<i class="fas fa-moon"></i> Modo Escuro';
-            this.mostrarNotificacao('Modo claro ativado', 'info');
-        }
-    }
-
-    carregarPreferencias() {
-        // Carrega modo escuro
-        const modoEscuro = localStorage.getItem('modoEscuro') === 'true';
-        if (modoEscuro) {
-            document.body.classList.add('dark-mode');
-            const btn = document.getElementById('btnModoEscuro');
-            btn.innerHTML = '<i class="fas fa-sun"></i> Modo Claro';
-        }
-    }
-
-    importarDados(arquivo) {
-        if (!arquivo) return;
-        
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            try {
-                const dados = JSON.parse(e.target.result);
-                
-                if (dados.produtos && Array.isArray(dados.produtos)) {
-                    if (confirm(`Importar ${dados.produtos.length} produtos? Isso substituirá todos os dados atuais.`)) {
-                        this.produtos = dados.produtos;
-                        this.salvarProdutos();
-                        this.atualizarInterface();
-                        this.mostrarNotificacao('Dados importados com sucesso!', 'success');
-                    }
-                } else {
-                    this.mostrarNotificacao('Arquivo inválido', 'error');
-                }
-            } catch (error) {
-                this.mostrarNotificacao('Erro ao ler arquivo', 'error');
-            }
-        };
-        
-        reader.readAsText(arquivo);
-        
-        // Limpa o input
-        document.getElementById('inputImportar').value = '';
-    }
-
-    exportarRelatorio() {
-        const dados = this.gerarDadosRelatorio();
-        const html = this.gerarHTMLRelatorio(dados);
-        
-        const blob = new Blob([html], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `relatorio-consertos-${new Date().toISOString().split('T')[0]}.html`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        this.mostrarNotificacao('Relatório exportado!', 'success');
-    }
-
-    imprimirRelatorio() {
-        const dados = this.gerarDadosRelatorio();
-        const html = this.gerarHTMLRelatorio(dados);
-        
-        const janela = window.open('', '_blank');
-        janela.document.write(html);
-        janela.document.close();
-        janela.print();
-    }
-
-    gerarDadosRelatorio() {
-        const produtosAtivos = this.produtos.filter(p => p.status === 'em_reparo');
-        const produtosConcluidos = this.produtos.filter(p => p.status === 'concluido');
-        
-        return {
-            data: new Date().toLocaleDateString('pt-BR'),
-            produtosAtivos,
-            produtosConcluidos,
-            estatisticas: {
-                total: this.produtos.length,
-                ativos: produtosAtivos.length,
-                concluidos: produtosConcluidos.length,
-                urgentes: produtosAtivos.filter(p => this.calcularDias(p.dataEntrada) > 7).length,
-                tempoMedio: this.calcularTempoMedio(produtosConcluidos)
-            }
-        };
-    }
-
-    gerarHTMLRelatorio(dados) {
-        return `
-            <!DOCTYPE html>
-            <html lang="pt-BR">
-            <head>
-                <meta charset="UTF-8">
-                <title>Relatório de Consertos - ${dados.data}</title>
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; }
-                    .header { text-align: center; margin-bottom: 30px; }
-                    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-                    .stat-card { background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; }
-                    .produtos-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-                    .produtos-table th, .produtos-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-                    .produtos-table th { background-color: #f2f2f2; }
-                    .urgente { background-color: #ffebee; }
-                    .alta { background-color: #fff3e0; }
-                </style>
-            </head>
-            <body>
-                <div class="header">
-                    <h1>Relatório de Consertos</h1>
-                    <p>Gerado em: ${dados.data}</p>
-                </div>
-                
-                <div class="stats">
-                    <div class="stat-card">
-                        <h3>${dados.estatisticas.total}</h3>
-                        <p>Total de Produtos</p>
-                    </div>
-                    <div class="stat-card">
-                        <h3>${dados.estatisticas.ativos}</h3>
-                        <p>Em Reparo</p>
-                    </div>
-                    <div class="stat-card">
-                        <h3>${dados.estatisticas.concluidos}</h3>
-                        <p>Concluídos</p>
-                    </div>
-                    <div class="stat-card">
-                        <h3>${dados.estatisticas.urgentes}</h3>
-                        <p>Urgentes</p>
-                    </div>
-                </div>
-                
-                <h2>Produtos em Reparo</h2>
-                <table class="produtos-table">
-                    <thead>
-                        <tr>
-                            <th>Cliente</th>
-                            <th>Produto</th>
-                            <th>Problema</th>
-                            <th>Data Entrada</th>
-                            <th>Dias</th>
-                            <th>Prioridade</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${dados.produtosAtivos.map(p => `
-                            <tr class="${p.prioridade}">
-                                <td>${p.nomeCliente}</td>
-                                <td>${p.produto}</td>
-                                <td>${p.problema}</td>
-                                <td>${this.formatarData(p.dataEntrada)}</td>
-                                <td>${this.calcularDias(p.dataEntrada)}</td>
-                                <td>${p.prioridade}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </body>
-            </html>
-        `;
-    }
-
-    // Método para exportar dados (funcionalidade extra)
-    exportarDados() {
-        const dados = {
-            produtos: this.produtos,
-            dataExportacao: new Date().toISOString(),
-            versao: '1.0'
-        };
-        
-        const blob = new Blob([JSON.stringify(dados, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `backup-consertos-${new Date().toISOString().split('T')[0]}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        this.mostrarNotificacao('Dados exportados com sucesso!', 'success');
-    }
-
-    // Métodos essenciais mantidos
-    calcularDias(dataEntrada) {
-        const entrada = new Date(dataEntrada);
-        const hoje = new Date();
-        const diferenca = hoje - entrada;
-        return Math.floor(diferenca / (1000 * 60 * 60 * 24));
-    }
-
-    gerarId() {
-        return Date.now().toString(36) + Math.random().toString(36).substr(2);
-    }
-
-    atualizarEstatisticas() {
-        const produtosAtivos = this.produtos.filter(p => p.status === 'em_reparo');
-        const produtosUrgentes = produtosAtivos.filter(p => this.calcularDias(p.dataEntrada) > 7);
-        const produtosConcluidos = this.produtos.filter(p => {
-            if (p.status !== 'concluido') return false;
-            const hoje = new Date().toDateString();
-            const dataConclusao = new Date(p.dataConclusao || p.dataCadastro).toDateString();
-            return hoje === dataConclusao;
-        });
-
-        const totalElement = document.getElementById('totalProdutos');
-        const urgentesElement = document.getElementById('produtosUrgentes');
-        const concluidosElement = document.getElementById('produtosConcluidos');
-        const badgeElement = document.getElementById('produtosBadge');
-
-        if (totalElement) totalElement.textContent = produtosAtivos.length;
-        if (urgentesElement) urgentesElement.textContent = produtosUrgentes.length;
-        if (concluidosElement) concluidosElement.textContent = produtosConcluidos.length;
-        if (badgeElement) badgeElement.textContent = produtosAtivos.length;
-    }
-
-    atualizarListaProdutos() {
-        const container = document.getElementById('listaProdutos');
-        if (!container) return;
-
-        const produtosAtivos = this.produtos.filter(p => p.status === 'em_reparo');
-        
-        if (produtosAtivos.length === 0) {
-            container.innerHTML = `
-                <div style="text-align: center; padding: 4rem; color: var(--text-muted);">
-                    <i class="fas fa-inbox" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
-                    <h3>Nenhum produto em reparo</h3>
-                    <p>Cadastre o primeiro produto para começar</p>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = produtosAtivos.map(produto => this.criarCardProduto(produto)).join('');
-    }
-
-    criarCardProduto(produto) {
-        const dias = this.calcularDias(produto.dataEntrada);
-        const dataFormatada = new Date(produto.dataEntrada).toLocaleDateString('pt-BR');
-        
-        let cardClass = 'product-card';
-        let diasBadgeClass = 'days-badge';
-        
-        if (produto.prioridade !== 'normal') {
-            cardClass += ` priority-${produto.prioridade}`;
-        }
-        
-        if (dias > 10) {
-            diasBadgeClass += ' danger';
-        } else if (dias > 7) {
-            diasBadgeClass += ' warning';
-        }
-
-        return `
-            <div class="${cardClass}" onclick="sistema.abrirDetalhes('${produto.id}')">
-                <div class="product-header">
-                    <div class="product-info">
-                        <h3>${produto.produto}</h3>
-                        <div class="product-client">${produto.nomeCliente} - ${produto.telefone}</div>
-                    </div>
-                    <div class="product-status">
-                        <div class="${diasBadgeClass}">
-                            ${dias} ${dias === 1 ? 'dia' : 'dias'}
-                        </div>
-                        <div class="priority-badge priority-${produto.prioridade}">
-                            ${produto.prioridade}
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="product-details">
-                    <div class="detail-row">
-                        <i class="fas fa-exclamation-circle detail-icon"></i>
-                        <div class="detail-content">
-                            <div class="detail-label">Problema</div>
-                            <div class="detail-value">${produto.problema}</div>
-                        </div>
-                    </div>
-                    <div class="detail-row">
-                        <i class="fas fa-calendar detail-icon"></i>
-                        <div class="detail-content">
-                            <div class="detail-label">Data de Entrada</div>
-                            <div class="detail-value">${dataFormatada}</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="product-actions">
-                    <button class="btn-action btn-complete" onclick="event.stopPropagation(); sistema.concluirProduto('${produto.id}')">
-                        <i class="fas fa-check"></i>
-                        Concluir
-                    </button>
-                    <button class="btn-action btn-delete" onclick="event.stopPropagation(); sistema.excluirProduto('${produto.id}')">
-                        <i class="fas fa-trash"></i>
-                        Excluir
-                    </button>
-                </div>
-            </div>
-        `;
-    }
-
-    abrirDetalhes(id) {
+    atualizarStatus(id, status) {
         const produto = this.produtos.find(p => p.id === id);
-        if (!produto) return;
-
-        const modal = document.getElementById('modalProdutoDetalhado');
-        const titulo = document.getElementById('modalTitulo');
-        const body = document.getElementById('modalBodyDetalhado');
-
-        titulo.textContent = `${produto.produto} - ${produto.nomeCliente}`;
-        
-        const dias = this.calcularDias(produto.dataEntrada);
-        const dataFormatada = new Date(produto.dataEntrada).toLocaleDateString('pt-BR');
-
-        body.innerHTML = `
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; margin-bottom: 2rem;">
-                <div>
-                    <h3 style="color: var(--text-primary); margin-bottom: 1rem;">Informações do Cliente</h3>
-                    <div style="background: var(--neutral-50); padding: 1.5rem; border-radius: var(--radius-lg);">
-                        <div style="margin-bottom: 1rem;">
-                            <strong>Nome:</strong> ${produto.nomeCliente}
-                        </div>
-                        <div>
-                            <strong>Telefone:</strong> ${produto.telefone}
-                        </div>
-                    </div>
-                </div>
-                
-                <div>
-                    <h3 style="color: var(--text-primary); margin-bottom: 1rem;">Detalhes do Produto</h3>
-                    <div style="background: var(--neutral-50); padding: 1.5rem; border-radius: var(--radius-lg);">
-                        <div style="margin-bottom: 1rem;">
-                            <strong>Produto:</strong> ${produto.produto}
-                        </div>
-                        <div style="margin-bottom: 1rem;">
-                            <strong>Problema:</strong> ${produto.problema}
-                        </div>
-                        <div style="margin-bottom: 1rem;">
-                            <strong>Prioridade:</strong> <span class="priority-badge priority-${produto.prioridade}">${produto.prioridade}</span>
-                        </div>
-                        <div>
-                            <strong>Data de Entrada:</strong> ${dataFormatada}
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div style="text-align: center; padding: 2rem; background: var(--primary-50); border-radius: var(--radius-lg); margin-bottom: 2rem;">
-                <div style="font-size: 3rem; font-weight: 800; color: var(--primary-600); margin-bottom: 0.5rem;">
-                    ${dias}
-                </div>
-                <div style="color: var(--text-secondary); font-weight: 600;">
-                    ${dias === 1 ? 'dia' : 'dias'} na loja
-                </div>
-            </div>
-            
-            <div style="display: flex; gap: 1rem; justify-content: center;">
-                <button class="btn-primary" onclick="sistema.concluirProduto('${produto.id}'); sistema.fecharModalDetalhado();">
-                    <i class="fas fa-check"></i>
-                    Marcar como Concluído
-                </button>
-                <button class="btn-secondary" onclick="sistema.excluirProduto('${produto.id}'); sistema.fecharModalDetalhado();">
-                    <i class="fas fa-trash"></i>
-                    Excluir Produto
-                </button>
-            </div>
-        `;
-
-        modal.classList.add('active');
+        if (produto) {
+            this.atualizarStatusAPI(id, status);
+        }
     }
 
-    fecharModalDetalhado() {
-        document.getElementById('modalProdutoDetalhado').classList.remove('active');
-    }
-
-    concluirProduto(id) {
-        if (confirm('Tem certeza que deseja marcar este produto como concluído?')) {
+    async atualizarStatusAPI(id, status) {
+        try {
+            // Mostra loading
+            const statusInfo = this.getStatusInfo(status);
+            this.mostrarNotificacao(`Atualizando status...`, 'info');
+            
+            // Prepara dados para enviar à API
+            const dadosAtualizacao = {
+                status: this.mapearStatusParaAPI(status)
+            };
+            
+            // Atualiza na API
+            await this.atualizarProdutoAPI(id, dadosAtualizacao);
+            
+            // Atualiza localmente
             const produto = this.produtos.find(p => p.id === id);
             if (produto) {
-                produto.status = 'concluido';
-                produto.dataConclusao = new Date().toISOString();
-                this.salvarProdutos();
-                this.atualizarInterface();
-                this.mostrarNotificacao('Produto marcado como concluído!', 'success');
+                produto.status = status;
             }
-        }
-    }
-
-    excluirProduto(id) {
-        if (confirm('Tem certeza que deseja excluir este produto? Esta ação não pode ser desfeita.')) {
-            this.produtos = this.produtos.filter(p => p.id !== id);
-            this.salvarProdutos();
+            
+            // Salva backup local
+            this.salvarProdutosLocal();
+            
+            // Atualiza interface
             this.atualizarInterface();
-            this.mostrarNotificacao('Produto excluído com sucesso!', 'success');
+            
+            this.mostrarNotificacao(`✅ Status atualizado: ${statusInfo.label}`, 'success');
+            
+        } catch (error) {
+            console.error('Erro ao atualizar status:', error);
+            this.mostrarNotificacao('Erro ao atualizar status. Tente novamente.', 'error');
         }
-    }
-
-    atualizarInterface() {
-        this.atualizarEstatisticas();
-        this.atualizarListaProdutos();
-        this.carregarNotificacoes();
     }
 
     mostrarNotificacao(mensagem, tipo = 'info') {
@@ -1794,21 +1782,48 @@ class RepairProSystem {
         }
     }
 
-    salvarProdutos() {
+    async carregarProdutos(params = null) {
         try {
-            localStorage.setItem('repairpro_produtos', JSON.stringify(this.produtos));
+            console.log('Carregando produtos da API...');
+            const produtosAPI = await this.listarProdutosAPI(params || {});
+            
+            // Mapeia os produtos da API para o formato do frontend
+            this.produtos = produtosAPI.map(p => this.mapearDaAPI(p));
+            
+            console.log(`${this.produtos.length} produtos carregados com sucesso`);
+            
+            // Salva no localStorage como backup
+            this.salvarProdutosLocal();
+            
+            // Atualiza a interface se já estiver carregada
+            if (this.currentPage) {
+                this.atualizarInterface();
+            }
+            
+            return this.produtos;
         } catch (error) {
-            console.error('Erro ao salvar produtos:', error);
+            console.error('Erro ao carregar produtos:', error);
+            // Em caso de erro, tenta carregar do localStorage
+            this.produtos = this.carregarProdutosLocal();
+            return this.produtos;
         }
     }
 
-    carregarProdutos() {
+    carregarProdutosLocal() {
         try {
             const dados = localStorage.getItem('repairpro_produtos');
             return dados ? JSON.parse(dados) : [];
         } catch (error) {
-            console.error('Erro ao carregar produtos:', error);
+            console.error('Erro ao carregar produtos do localStorage:', error);
             return [];
+        }
+    }
+
+    salvarProdutosLocal() {
+        try {
+            localStorage.setItem('repairpro_produtos', JSON.stringify(this.produtos));
+        } catch (error) {
+            console.error('Erro ao salvar produtos no localStorage:', error);
         }
     }
 
@@ -2002,7 +2017,7 @@ class RepairProSystem {
                 nomeCliente: "Maria Santos",
                 telefone: "(11) 95555-5555",
                 produto: "Fogão Consul",
-                problem: "Forno não funciona",
+                problema: "Forno não funciona",
                 dataEntrada: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
                 prioridade: "normal",
                 dataCadastro: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()

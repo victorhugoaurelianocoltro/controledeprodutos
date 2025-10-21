@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RepairPro - Categoria</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    .categoria-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 1.25rem 0 1rem 0;
+    }
+    .categoria-title {
+      display: flex; align-items: center; gap: .75rem;
+      font-size: 1.375rem; font-weight: 800;
+    }
+    .categoria-sub {
+      color: var(--text-secondary);
+      margin-left: 2.25rem;
+    }
+    .back-link { display: inline-flex; align-items: center; gap: .5rem; }
+    .back-link i { font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <main class="main-content" style="padding: 1.25rem;">
+    <a class="back-link" href="index.html"><i class="fas fa-arrow-left"></i> Voltar ao Dashboard</a>
+
+    <div class="categoria-header">
+      <div>
+        <div class="categoria-title" id="categoriaTitulo">
+          <i class="fas fa-filter"></i> Categoria
+        </div>
+        <div class="categoria-sub" id="categoriaSub">Carregando...</div>
+      </div>
+    </div>
+
+    <div class="products-grid" id="listaCategoria"></div>
+  </main>
+
+  <script src="script.js"></script>
+  <script>
+    // Aguarda o sistema estar pronto
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Tenta várias vezes até o objeto global estar disponível
+      const waitForSistema = () => new Promise((resolve) => {
+        const start = Date.now();
+        const timer = setInterval(() => {
+          if (window.sistema && window.sistema.listarProdutosAPI) {
+            clearInterval(timer);
+            resolve(window.sistema);
+          }
+          if (Date.now() - start > 3000) {
+            clearInterval(timer);
+            resolve(window.sistema);
+          }
+        }, 50);
+      });
+
+      const sistema = await waitForSistema();
+      const params = new URLSearchParams(window.location.search);
+      const filtro = params.get('filtro') || 'todos';
+
+      // Título e subtítulo
+      const titulo = document.getElementById('categoriaTitulo');
+      const sub = document.getElementById('categoriaSub');
+      const mapTitulo = {
+        'reparo': 'Produtos em Reparo',
+        'urgente': 'Produtos Urgentes',
+        'concluido-hoje': 'Concluídos Hoje',
+        'concluido': 'Concluídos',
+        'pendente': 'Pendentes'
+      };
+      titulo.innerHTML = `<i class="fas fa-filter"></i> ${mapTitulo[filtro] || 'Categoria'}`;
+
+      try {
+        // Mapeia para o valor aceito pela API
+        const statusAPI = sistema.mapearFiltroURLParaStatusAPI(filtro);
+        const listaEl = document.getElementById('listaCategoria');
+        sub.textContent = 'Carregando produtos...';
+
+        // Faz a requisição filtrada diretamente na API
+        const dados = await sistema.listarProdutosAPI(statusAPI ? { status: statusAPI } : {});
+        const produtos = (dados || []).map(p => sistema.mapearDaAPI(p));
+
+        if (!produtos.length) {
+          sub.textContent = 'Nenhum produto encontrado para esta categoria.';
+          listaEl.innerHTML = sistema.getEmptyState ? sistema.getEmptyState() : '<p>Nenhum produto.</p>';
+          return;
+        }
+
+        sub.textContent = `${produtos.length} produto(s) encontrado(s)`;
+        listaEl.innerHTML = produtos.map(p => sistema.criarCardProduto(p)).join('');
+      } catch (e) {
+        console.error(e);
+        sub.textContent = 'Erro ao carregar produtos.';
+      }
+    });
+  </script>
+</body>
+</html>
