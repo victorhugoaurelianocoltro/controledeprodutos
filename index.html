@@ -148,6 +148,45 @@
     <!-- Input oculto para importar arquivos -->
     <input type="file" id="inputImportar" accept=".json" style="display: none;">
 
+    <script>
+    // Script inline para testar os cards imediatamente
+    console.log('✅ INLINE: Script carregado!');
+    
+    document.addEventListener('DOMContentLoaded', () => {
+        console.log('✅ INLINE: DOM carregado!');
+        
+        // Configurar cliques nos cards
+        const cardReparo = document.getElementById('card-em-reparo');
+        const cardUrgentes = document.getElementById('card-urgentes');
+        const cardConcluidos = document.getElementById('card-concluidos');
+        
+        console.log('Cards encontrados:', { cardReparo, cardUrgentes, cardConcluidos });
+        
+        if (cardReparo) {
+            cardReparo.style.cursor = 'pointer';
+            cardReparo.addEventListener('click', () => {
+                alert('Card Produtos em Reparo clicado!');
+                console.log('Clicou em Reparo');
+            });
+        }
+        
+        if (cardUrgentes) {
+            cardUrgentes.style.cursor = 'pointer';
+            cardUrgentes.addEventListener('click', () => {
+                alert('Card Produtos Urgentes clicado!');
+                console.log('Clicou em Urgentes');
+            });
+        }
+        
+        if (cardConcluidos) {
+            cardConcluidos.style.cursor = 'pointer';
+            cardConcluidos.addEventListener('click', () => {
+                alert('Card Concluídos Hoje clicado!');
+                console.log('Clicou em Concluídos');
+            });
+        }
+    });
+    </script>
     <script src="script.js"></script>
 </body>
 </html>

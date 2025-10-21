@@ -1,8 +1,13 @@
 // RepairPro - Sistema Profissional de Gestão de Consertos
+console.log('🚀 [INIT] Carregando RepairProSystem...');
+
 class RepairProSystem {
     constructor() {
+        console.log('📦 [CONSTRUCTOR] Inicializando RepairProSystem');
         // Configuração da API
         this.API_URL = 'http://localhost:3000/api/produtos';
+        // Base para a API de categorias (pode ser a mesma API se suportar categoria)
+        this.CATEGORIA_API_BASE = 'https://minhaapi.com';
         this.apiConnected = false;
         
         this.produtos = [];
@@ -20,12 +25,14 @@ class RepairProSystem {
     }
 
     async inicializar() {
+        console.log('⚙️ [INIT] Iniciando configurações...');
         this.configurarEventos();
         this.configurarNavegacao();
         this.carregarPreferencias();
         this.atualizarRelogio();
         this.iniciarAtualizacaoAutomatica();
         this.iniciarMonitoramentoAPI();
+        console.log('📡 [INIT] Carregando produtos da API...');
         // Carrega produtos da API e depois carrega a página
         await this.carregarProdutos();
         const params = new URLSearchParams(window.location.search);
@@ -66,15 +73,88 @@ class RepairProSystem {
         const elReparo = document.getElementById('card-em-reparo');
         const elUrgentes = document.getElementById('card-urgentes');
         const elConcluidos = document.getElementById('card-concluidos');
-        if (elReparo) elReparo.addEventListener('click', () => {
-            window.location.href = `categoria.html?filtro=reparo`;
-        });
-        if (elUrgentes) elUrgentes.addEventListener('click', () => {
-            window.location.href = `categoria.html?filtro=urgente`;
-        });
-        if (elConcluidos) elConcluidos.addEventListener('click', () => {
-            window.location.href = `categoria.html?filtro=concluido-hoje`;
-        });
+        
+        console.log('[Dashboard] Configurando cliques dos cards:', { elReparo, elUrgentes, elConcluidos });
+        
+        if (elReparo) {
+            elReparo.style.cursor = 'pointer';
+            elReparo.addEventListener('click', () => {
+                console.log('[Dashboard] Card Em Reparo clicado - mostrando produtos inline');
+                this.mostrarProdutosDashboard('reparo', 'Produtos em Reparo');
+            });
+        }
+        if (elUrgentes) {
+            elUrgentes.style.cursor = 'pointer';
+            elUrgentes.addEventListener('click', () => {
+                console.log('[Dashboard] Card Urgentes clicado - mostrando produtos inline');
+                this.mostrarProdutosDashboard('urgente', 'Produtos Urgentes');
+            });
+        }
+        if (elConcluidos) {
+            elConcluidos.style.cursor = 'pointer';
+            elConcluidos.addEventListener('click', () => {
+                console.log('[Dashboard] Card Concluídos clicado - mostrando produtos inline');
+                this.mostrarProdutosDashboard('concluido-hoje', 'Concluídos Hoje');
+            });
+        }
+    }
+
+    /**
+     * Mostra produtos filtrados inline no dashboard
+     */
+    async mostrarProdutosDashboard(filtro, titulo) {
+        const container = document.getElementById('dashboardProdutos');
+        if (!container) return;
+
+        // Adiciona indicador de carregamento
+        container.innerHTML = `
+            <div class="categoria-inline-header">
+                <button class="btn-secondary btn-voltar-inline" id="btnVoltarDashboard">
+                    <i class="fas fa-arrow-left"></i> Voltar
+                </button>
+                <h2 class="categoria-inline-title">
+                    <i class="fas fa-filter"></i> ${titulo}
+                </h2>
+            </div>
+            <div class="categoria-inline-sub">Carregando produtos...</div>
+            <div class="products-grid" id="listaInlineProdutos"></div>
+        `;
+
+        // Scroll suave para a lista
+        container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        // Configura botão voltar
+        const btnVoltar = document.getElementById('btnVoltarDashboard');
+        if (btnVoltar) {
+            btnVoltar.addEventListener('click', () => {
+                container.innerHTML = '';
+                this.atualizarEstatisticas();
+            });
+        }
+
+        try {
+            // Mapeia para o valor aceito pela API
+            const statusAPI = this.mapearFiltroURLParaStatusAPI(filtro);
+            const sub = container.querySelector('.categoria-inline-sub');
+            const lista = document.getElementById('listaInlineProdutos');
+
+            // Busca produtos filtrados da API
+            const dados = await this.listarProdutosAPI(statusAPI ? { status: statusAPI } : {});
+            const produtos = (dados || []).map(p => this.mapearDaAPI(p));
+
+            if (!produtos.length) {
+                sub.textContent = 'Nenhum produto encontrado nesta categoria.';
+                lista.innerHTML = this.getEmptyState();
+                return;
+            }
+
+            sub.textContent = `${produtos.length} produto(s) encontrado(s)`;
+            lista.innerHTML = produtos.map(p => this.criarCardProduto(p)).join('');
+        } catch (e) {
+            console.error('[Dashboard] Erro ao carregar produtos:', e);
+            const sub = container.querySelector('.categoria-inline-sub');
+            if (sub) sub.textContent = 'Erro ao carregar produtos.';
+        }
     }
 
     /**
@@ -162,13 +242,18 @@ class RepairProSystem {
         try {
             let url = this.API_URL;
             const query = new URLSearchParams();
-            // Suporte a filtros via querystring, exemplo: ?status=urgente
-            if (params.status) query.set('status', params.status);
-            if (params.prioridade) query.set('prioridade', params.prioridade);
-            if (params.dias) query.set('dias', params.dias);
-            const qs = query.toString();
-            if (qs) url += `?${qs}`;
-
+            
+            // Se houver filtros, usa a rota /buscar
+            if (params.status || params.prioridade || params.dias) {
+                url = this.API_URL.replace('/produtos', '/produtos/buscar');
+                if (params.status) query.set('status', params.status);
+                if (params.prioridade) query.set('prioridade', params.prioridade);
+                if (params.dias) query.set('dias', params.dias);
+                const qs = query.toString();
+                if (qs) url += `?${qs}`;
+            }
+            
+            console.log('[API] Buscando produtos:', url);
             const response = await fetch(url);
             const data = await response.json();
             
@@ -272,18 +357,20 @@ class RepairProSystem {
      * Mapeia dados do frontend para o formato da API
      */
     mapearParaAPI(produtoFrontend) {
-        return {
-            cliente: produtoFrontend.nomeCliente,
-            telefone: produtoFrontend.telefone,
-            produto: produtoFrontend.produto,
-            defeito: produtoFrontend.problema,
-            valor: produtoFrontend.valor || 0,
-            entrada: produtoFrontend.dataEntrada,
+        const mapped = {
+            cliente: produtoFrontend.nomeCliente || '',
+            telefone: produtoFrontend.telefone || '',
+            produto: produtoFrontend.produto || '',
+            defeito: produtoFrontend.problema || '',
+            valor: Number(produtoFrontend.valor) || 0,
+            entrada: produtoFrontend.dataEntrada || new Date().toISOString().split('T')[0],
             entrega: produtoFrontend.dataEntrega || '',
-            status: this.mapearStatusParaAPI(produtoFrontend.status),
-            prioridade: this.mapearPrioridadeParaAPI(produtoFrontend.prioridade),
+            status: this.mapearStatusParaAPI(produtoFrontend.status || 'em_reparo'),
+            prioridade: this.mapearPrioridadeParaAPI(produtoFrontend.prioridade || 'normal'),
             observacoes: produtoFrontend.observacoes || ''
         };
+        console.log('📝 [MAPEAMENTO] Produto mapeado para API:', mapped);
+        return mapped;
     }
 
     /**
@@ -494,8 +581,10 @@ class RepairProSystem {
         
         switch(page) {
             case 'dashboard':
+                console.log('🏠 [DASHBOARD] Renderizando dashboard...');
                 container.innerHTML = this.renderDashboard();
                 this.atualizarEstatisticas();
+                console.log('🖱️ [DASHBOARD] Configurando cliques dos cards...');
                 this.configurarClicksDashboard();
                 break;
             case 'produtos':
@@ -877,10 +966,13 @@ class RepairProSystem {
     }
 
     configurarFormulario() {
+        console.log('📝 [FORM] Configurando formulário de cadastro...');
         const form = document.getElementById('produtoForm');
         if (form) {
+            console.log('✅ [FORM] Formulário encontrado!');
             form.addEventListener('submit', (e) => {
                 e.preventDefault();
+                console.log('📤 [FORM] Formulário submetido! Iniciando cadastro...');
                 this.cadastrarProduto();
             });
             
@@ -1025,14 +1117,20 @@ class RepairProSystem {
 
     async cadastrarProdutoAPI(dadosProduto) {
         try {
+            console.log('🚀 [API] Iniciando cadastro via API...');
+            console.log('📦 [API] Dados do produto:', dadosProduto);
+            
             // Mostra loading
             this.mostrarNotificacao('Cadastrando produto...', 'info');
             
             // Mapeia para o formato da API
             const produtoAPI = this.mapearParaAPI(dadosProduto);
+            console.log('🔄 [API] Produto mapeado para API:', produtoAPI);
             
             // Envia para a API
+            console.log('📡 [API] Enviando POST para:', this.API_URL);
             const novoProduto = await this.criarProdutoAPI(produtoAPI);
+            console.log('✅ [API] Produto criado com sucesso:', novoProduto);
             
             // Adiciona o produto mapeado à lista local
             const produtoMapeado = this.mapearDaAPI(novoProduto);
@@ -1059,7 +1157,9 @@ class RepairProSystem {
             }, 1500);
             
         } catch (error) {
-            console.error('Erro ao cadastrar produto:', error);
+            console.error('❌ [API] ERRO ao cadastrar produto:', error);
+            console.error('❌ [API] Detalhes do erro:', error.message);
+            console.error('❌ [API] Stack:', error.stack);
             this.mostrarNotificacao('Erro ao cadastrar produto. Tente novamente.', 'error');
         }
     }
@@ -2044,7 +2144,9 @@ class RepairProSystem {
 
 // Inicializa o sistema quando a página carregar
 let sistema;
+console.log('🌐 [DOM] DOMContentLoaded - Preparando para inicializar...');
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('✅ [DOM] DOM carregado! Criando instância do sistema...');
     sistema = new RepairProSystem();
     
     // Se não há produtos, criar alguns de exemplo
